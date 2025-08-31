@@ -1,0 +1,750 @@
+import json
+import re
+import time
+import random
+import hashlib
+import asyncio
+from datetime import datetime
+from typing import Dict, List, Optional
+from urllib.parse import urlparse, parse_qs
+import pymongo
+import pandas as pd
+from playwright.sync_api import sync_playwright
+import jsonpath
+from fake_useragent import UserAgent
+
+class TaobaoAdvancedSpider:
+    """Advanced Taobao Spider - with anti-detection strategies and complete data processing"""
+    
+    def __init__(self, use_proxy=False, save_to_db=False):
+        """
+        Initialize the spider
+        :param use_proxy: Whether to use proxy IPs
+        :param save_to_db: Whether to save to MongoDB database
+        """
+        self.product_dict = {}
+        self.reviews_list = []
+        self.api_endpoints = {
+            'detail': 'mtop.taobao.detail.getdetail',
+            'rate': 'mtop.taobao.rate.detaillist.get',
+            'desc': 'mtop.taobao.detail.getdesc',
+            'skubase': 'mtop.taobao.skubase.get'
+        }
+        self.playwright = None
+        self.browser = None
+        self.context = None
+        self.page = None
+        self.use_proxy = use_proxy
+        self.save_to_db = save_to_db
+        self.ua = UserAgent()
+        
+        # MongoDB configuration
+        if save_to_db:
+            self.mongo_client = pymongo.MongoClient('mongodb://localhost:27017/')
+            self.db = self.mongo_client['taobao_data']
+            self.products_collection = self.db['products']
+            self.reviews_collection = self.db['reviews']
+        
+        # Request statistics
+        self.request_count = 0
+        self.success_count = 0
+        self.failed_requests = []
+        
+    def get_random_proxy(self):
+        """Get random proxy IP"""
+        # Should connect to proxy pool API here
+        proxy_pool = [
+            {"server": "http://proxy1.com:8080", "username": "user", "password": "pass"},
+            # Add more proxies
+        ]
+        return random.choice(proxy_pool) if proxy_pool else None
+    
+    def generate_fingerprint(self):
+        """Generate browser fingerprint"""
+        fingerprint = {
+            'screen_resolution': random.choice(['1920x1080', '1366x768', '1440x900']),
+            'timezone': 'Asia/Shanghai',
+            'language': 'zh-CN',
+            'platform': random.choice(['Win32', 'MacIntel']),
+            'hardware_concurrency': random.choice([4, 8, 16]),
+            'device_memory': random.choice([4, 8, 16]),
+            'webgl_vendor': 'Intel Inc.',
+            'webgl_renderer': random.choice([
+                'Intel Iris OpenGL Engine',
+                'NVIDIA GeForce GTX 1060',
+                'AMD Radeon Pro 5500M'
+            ])
+        }
+        return fingerprint
+    
+    def init_browser(self, headless=False):
+        """Initialize browser with anti-detection measures"""
+        self.playwright = sync_playwright().start()
+        
+        # Browser launch arguments
+        launch_args = [
+            '--disable-blink-features=AutomationControlled',
+            '--disable-features=IsolateOrigins,site-per-process',
+            '--disable-web-security',
+            '--disable-dev-shm-usage',
+            '--no-sandbox',
+            f'--user-agent={self.ua.random}'
+        ]
+        
+        # Proxy configuration
+        proxy_config = None
+        if self.use_proxy:
+            proxy = self.get_random_proxy()
+            if proxy:
+                proxy_config = proxy
+                print(f"Using proxy: {proxy['server']}")
+        
+        # Launch browser
+        self.browser = self.playwright.chromium.launch(
+            headless=headless,
+            args=launch_args,
+            proxy=proxy_config
+        )
+        
+        # Create browser context
+        fingerprint = self.generate_fingerprint()
+        self.context = self.browser.new_context(
+            user_agent=self.ua.random,
+            viewport={'width': int(fingerprint['screen_resolution'].split('x')[0]), 
+                     'height': int(fingerprint['screen_resolution'].split('x')[1])},
+            locale='zh-CN',
+            timezone_id='Asia/Shanghai',
+            permissions=['geolocation'],
+            geolocation={'latitude': 31.230416, 'longitude': 121.473701},  # Shanghai coordinates
+        )
+        
+        # Inject anti-detection scripts
+        self.context.add_init_script("""
+            // Hide webdriver
+            Object.defineProperty(navigator, 'webdriver', {
+                get: () => undefined
+            });
+            
+            // Hide Chrome features
+            window.chrome = {
+                runtime: {},
+            };
+            
+            // Override permissions query
+            const originalQuery = window.navigator.permissions.query;
+            window.navigator.permissions.query = (parameters) => (
+                parameters.name === 'notifications' ?
+                    Promise.resolve({ state: Notification.permission }) :
+                    originalQuery(parameters)
+            );
+            
+            // Mock plugins
+            Object.defineProperty(navigator, 'plugins', {
+                get: () => [1, 2, 3, 4, 5]
+            });
+            
+            // Mock languages
+            Object.defineProperty(navigator, 'languages', {
+                get: () => ['zh-CN', 'zh']
+            });
+        """)
+        
+        # Load cookies (if saved login cookies exist)
+        self.load_cookies()
+        
+        self.page = self.context.new_page()
+        
+        # Listen to console messages (for debugging)
+        self.page.on('console', lambda msg: print(f"Console: {msg.text}"))
+        
+    def load_cookies(self):
+        """Load saved cookies to maintain login state"""
+        try:
+            with open('taobao_cookies.json', 'r') as f:
+                cookies = json.load(f)
+                self.context.add_cookies(cookies)
+                print("Loaded saved cookies")
+        except FileNotFoundError:
+            print("No saved cookie file found")
+    
+    def save_cookies(self):
+        """Save current cookies"""
+        cookies = self.context.cookies()
+        with open('taobao_cookies.json', 'w') as f:
+            json.dump(cookies, f)
+        print("Cookies saved")
+    
+    def handle_login_check(self):
+        """Handle login detection"""
+        try:
+            # Check if login is required
+            if self.page.query_selector('.login-title, .member-login'):
+                print("Login required, handling...")
+                
+                # Automated login logic can be implemented here
+                # 1. QR code login
+                # 2. Username/password login (need to handle slider verification)
+                
+                # Currently using manual login
+                print("Please complete login manually in the browser...")
+                input("Press Enter to continue after login...")
+                
+                # Save cookies after login
+                self.save_cookies()
+                return True
+        except Exception as e:
+            print(f"Login check error: {e}")
+        return False
+    
+    def analyze_api_params(self, url):
+        """Analyze API parameters"""
+        parsed = urlparse(url)
+        params = parse_qs(parsed.query)
+        
+        # Extract key parameters
+        api_params = {
+            'api': params.get('api', [''])[0],
+            'v': params.get('v', [''])[0],
+            'type': params.get('type', [''])[0],
+            'dataType': params.get('dataType', [''])[0],
+            'callback': params.get('callback', [''])[0],
+            'data': params.get('data', [''])[0]
+        }
+        
+        # Parse data parameter (usually JSON)
+        if api_params['data']:
+            try:
+                api_params['data_parsed'] = json.loads(api_params['data'])
+            except:
+                pass
+        
+        return api_params
+    
+    def decrypt_response(self, encrypted_data):
+        """Decrypt response data (if needed)"""
+        # Some APIs may return encrypted data, requiring reverse engineering
+        # This is just a framework example
+        return encrypted_data
+    
+    def setup_request_interceptor(self):
+        """Setup advanced request interceptor"""
+        
+        def handle_route(route):
+            """Request interception and modification"""
+            headers = route.request.headers
+            # Add or modify request headers
+            headers['accept-language'] = 'zh-CN,zh;q=0.9'
+            headers['cache-control'] = 'no-cache'
+            route.continue_(headers=headers)
+        
+        def handle_response(response):
+            """Response interception and processing"""
+            try:
+                self.request_count += 1
+                response_url = response.url
+                status = response.status
+                
+                # Log request information
+                request_info = {
+                    'url': response_url,
+                    'status': status,
+                    'time': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+                }
+                
+                if status != 200:
+                    self.failed_requests.append(request_info)
+                    print(f"Request failed: {response_url} - Status: {status}")
+                    return
+                
+                # Analyze API parameters
+                if 'h5api.m.taobao.com' in response_url:
+                    api_params = self.analyze_api_params(response_url)
+                    print(f"Intercepted API: {api_params['api']} v{api_params['v']}")
+                
+                # Get response body
+                body = response.body()
+                if not body:
+                    return
+                
+                text = body.decode('utf-8', errors='ignore')
+                
+                # Process data based on different APIs
+                if 'mtop.taobao.detail.getdetail' in response_url:
+                    self.parse_detail_api(text, response_url)
+                    self.success_count += 1
+                    
+                elif 'mtop.taobao.rate.detaillist.get' in response_url:
+                    self.parse_reviews_api(text, response_url)
+                    self.success_count += 1
+                    
+                elif 'mtop.taobao.detail.getdesc' in response_url:
+                    self.parse_description_api(text, response_url)
+                    self.success_count += 1
+                    
+                elif 'pcdetail' in response_url:
+                    self.parse_pc_detail(text, response_url)
+                    self.success_count += 1
+                    
+            except Exception as e:
+                print(f"Error processing response: {e}")
+        
+        # Setup route interception
+        self.page.route('**/*', handle_route)
+        # Setup response listener
+        self.page.on('response', handle_response)
+    
+    def parse_detail_api(self, response_body, url):
+        """Parse product detail API data"""
+        try:
+            # Handle JSONP
+            json_data = self.extract_json_from_jsonp(response_body)
+            if not json_data:
+                return
+            
+            # Extract product basic information
+            data = json_data.get('data', {})
+            
+            # Product information
+            item = data.get('item', {})
+            self.product_dict.update({
+                'product_id': item.get('itemId'),
+                'title': item.get('title'),
+                'subtitle': item.get('subtitle'),
+                'share_url': item.get('shareUrl'),
+                'images': item.get('images', []),
+                'video_url': item.get('videoUrl'),
+                'item_status': item.get('itemStatus'),
+                'publish_time': item.get('publishTime')
+            })
+            
+            # Price information
+            price_info = data.get('price', {})
+            self.product_dict.update({
+                'current_price': price_info.get('price', {}).get('priceText'),
+                'original_price': price_info.get('extraPrices', [{}])[0].get('priceText') if price_info.get('extraPrices') else None,
+                'price_range': price_info.get('priceRange')
+            })
+            
+            # Promotion information
+            promotion = data.get('promotion', {})
+            self.product_dict['promotions'] = promotion.get('promotionList', [])
+            
+            # SKU information
+            sku_info = data.get('skuBase', {})
+            if sku_info:
+                self.product_dict['sku_props'] = sku_info.get('props', [])
+                self.product_dict['sku_list'] = sku_info.get('skus', [])
+            
+            # Seller information
+            seller = data.get('seller', {})
+            self.product_dict['seller_info'] = {
+                'shop_id': seller.get('shopId'),
+                'shop_name': seller.get('shopName'),
+                'seller_id': seller.get('sellerId'),
+                'seller_nick': seller.get('sellerNick'),
+                'shop_ratings': seller.get('evaluates', []),
+                'fans_count': seller.get('fansCount'),
+                'shop_type': seller.get('shopType')
+            }
+            
+            # Logistics information
+            delivery = data.get('delivery', {})
+            self.product_dict['delivery_info'] = {
+                'from_location': delivery.get('from'),
+                'postage': delivery.get('postage'),
+                'logistics_types': delivery.get('logisticsTypes')
+            }
+            
+            print(f"✓ Product details parsed: {item.get('title')[:30]}...")
+            
+        except Exception as e:
+            print(f"Error parsing detail API: {e}")
+    
+    def parse_reviews_api(self, response_body, url):
+        """Parse reviews API data"""
+        try:
+            json_data = self.extract_json_from_jsonp(response_body)
+            if not json_data:
+                return
+            
+            data = json_data.get('data', {})
+            
+            # Review statistics
+            rate_summary = data.get('rateStatistic', {})
+            self.product_dict['review_statistics'] = {
+                'total_count': rate_summary.get('totalCount'),
+                'good_rate': rate_summary.get('goodRate'),
+                'average_score': rate_summary.get('averageScore'),
+                'tag_statistics': rate_summary.get('tagStatistics', [])
+            }
+            
+            # Review list
+            rate_list = data.get('rateList', [])
+            
+            for rate in rate_list:
+                review = {
+                    # Basic information
+                    'rate_id': rate.get('id'),
+                    'user_nick': rate.get('userNick'),
+                    'user_vip': rate.get('userVipLevel'),
+                    'user_avatar': rate.get('userAvatar'),
+                    
+                    # Review content
+                    'content': rate.get('feedback'),
+                    'rate_date': rate.get('feedbackDate'),
+                    'rating': rate.get('rate'),
+                    
+                    # Product information
+                    'sku_info': rate.get('skuValueStr'),
+                    'sku_id': rate.get('skuId'),
+                    
+                    # Images and videos
+                    'images': rate.get('pics', []),
+                    'video': rate.get('video'),
+                    
+                    # Append comment
+                    'append_comment': None,
+                    
+                    # Seller reply
+                    'seller_reply': rate.get('reply'),
+                    
+                    # Other information
+                    'useful_count': rate.get('useful'),
+                    'from_mall': rate.get('fromMall'),
+                    'from_phone': rate.get('fromPhone')
+                }
+                
+                # Process append comment
+                if rate.get('appendedFeed'):
+                    appended = rate['appendedFeed']
+                    review['append_comment'] = {
+                        'content': appended.get('appendedFeedback'),
+                        'date': appended.get('feedbackDate'),
+                        'images': appended.get('pics', [])
+                    }
+                
+                self.reviews_list.append(review)
+            
+            print(f"✓ Retrieved {len(rate_list)} reviews")
+            
+        except Exception as e:
+            print(f"Error parsing reviews API: {e}")
+    
+    def parse_description_api(self, response_body, url):
+        """Parse product description API"""
+        try:
+            json_data = self.extract_json_from_jsonp(response_body)
+            if not json_data:
+                return
+            
+            data = json_data.get('data', {})
+            self.product_dict['pc_desc_url'] = data.get('pcDescUrl')
+            self.product_dict['h5_desc_url'] = data.get('h5DescUrl')
+            self.product_dict['desc_images'] = data.get('images', [])
+            
+            print("✓ Product description parsed")
+            
+        except Exception as e:
+            print(f"Error parsing description API: {e}")
+    
+    def parse_pc_detail(self, response_body, url):
+        """Parse PC detail data"""
+        try:
+            json_data = self.extract_json_from_jsonp(response_body)
+            if not json_data:
+                return
+            
+            # PC-specific detailed data
+            data = json_data.get('data', {})
+            
+            # Product parameters
+            item_params = jsonpath.jsonpath(data, '$..componentsVO.extensionInfoVO.infos')
+            if item_params:
+                params_dict = {}
+                for info_group in item_params[0]:
+                    if info_group.get('title') == '参数':  # Parameters
+                        for param in info_group.get('items', []):
+                            key = param.get('title', '')
+                            value = param.get('text', [''])[0] if param.get('text') else ''
+                            if key:
+                                params_dict[key] = value
+                self.product_dict['product_parameters'] = params_dict
+            
+            # Product specifications
+            sku_info = jsonpath.jsonpath(data, '$..skuBase')
+            if sku_info:
+                self.product_dict['specification_info'] = sku_info[0]
+            
+            print("✓ PC detail parsed")
+            
+        except Exception as e:
+            print(f"Error parsing PC detail: {e}")
+    
+    def extract_json_from_jsonp(self, response_text):
+        """Extract JSON data from JSONP response"""
+        try:
+            # Try to parse JSON directly
+            if response_text.startswith('{'):
+                return json.loads(response_text)
+            
+            # Handle JSONP format
+            # Match mtopjsonpXXX(...) format
+            match = re.search(r'mtopjsonp\d+\((.*)\)$', response_text)
+            if match:
+                return json.loads(match.group(1))
+            
+            # Match other callback formats
+            match = re.search(r'callback\d*\((.*)\)$', response_text)
+            if match:
+                return json.loads(match.group(1))
+            
+            # Match {...} format JSON
+            match = re.search(r'\{.*\}', response_text)
+            if match:
+                return json.loads(match.group(0))
+            
+        except json.JSONDecodeError as e:
+            print(f"JSON parsing error: {e}")
+        except Exception as e:
+            print(f"Error extracting JSON: {e}")
+        
+        return None
+    
+    def simulate_user_behavior(self):
+        """Simulate user behavior"""
+        # Random scrolling
+        for _ in range(random.randint(2, 4)):
+            scroll_height = random.randint(300, 700)
+            self.page.evaluate(f"window.scrollBy(0, {scroll_height})")
+            time.sleep(random.uniform(0.5, 1.5))
+        
+        # Random mouse movements
+        for _ in range(random.randint(3, 6)):
+            x = random.randint(100, 800)
+            y = random.randint(100, 600)
+            self.page.mouse.move(x, y)
+            time.sleep(random.uniform(0.1, 0.3))
+        
+        # Random pause
+        time.sleep(random.uniform(1, 3))
+    
+    def scroll_to_load_reviews(self, max_pages=5):
+        """Scroll to load review data"""
+        print(f"Loading review data (max {max_pages} pages)...")
+        
+        for page_num in range(1, max_pages + 1):
+            print(f"  Loading page {page_num}...")
+            
+            # Simulate user behavior
+            self.simulate_user_behavior()
+            
+            # Scroll to review section
+            try:
+                # Try to locate review section
+                review_section = self.page.query_selector('[class*="Reviews"], [class*="rate"], #J_Reviews')
+                if review_section:
+                    review_section.scroll_into_view_if_needed()
+                    time.sleep(1)
+            except:
+                pass
+            
+            # Find and click next page button
+            try:
+                # Multiple possible selectors for "Next Page" button
+                next_btn_selectors = [
+                    '.rate-paginator .next',
+                    '.pagination-next',
+                    'button:has-text("下一页")',
+                    'a:has-text("下一页")',
+                    '[class*="next"]:has-text(">")'
+                ]
+                
+                for selector in next_btn_selectors:
+                    next_btn = self.page.query_selector(selector)
+                    if next_btn and next_btn.is_visible() and next_btn.is_enabled():
+                        next_btn.click()
+                        print(f"    Clicked next page")
+                        time.sleep(random.uniform(2, 3))
+                        break
+                else:
+                    # No next page button found, might be last page
+                    if page_num == 1:
+                        # First page has no button, try scroll loading
+                        self.page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
+                        time.sleep(2)
+            except Exception as e:
+                print(f"    Pagination error: {e}")
+    
+    def crawl_product(self, product_url, max_review_pages=3):
+        """
+        Main function to crawl product
+        :param product_url: Product URL
+        :param max_review_pages: Maximum number of review pages to crawl
+        """
+        try:
+            start_time = time.time()
+            print(f"\n{'='*60}")
+            print(f"Starting crawl: {product_url}")
+            print(f"Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+            print(f"{'='*60}\n")
+            
+            # Initialize browser
+            if not self.browser:
+                self.init_browser(headless=False)
+            
+            # Setup interceptor
+            self.setup_request_interceptor()
+            
+            # Visit page
+            print("Visiting product page...")
+            self.page.goto(product_url, wait_until='domcontentloaded', timeout=30000)
+            
+            # Wait for initial page load
+            time.sleep(3)
+            
+            # Check login
+            self.handle_login_check()
+            
+            # Simulate user browsing behavior
+            print("Simulating user browsing...")
+            self.simulate_user_behavior()
+            
+            # Click product detail tab
+            try:
+                detail_tab = self.page.query_selector('a:has-text("商品详情"), li:has-text("商品详情")')
+                if detail_tab:
+                    detail_tab.click()
+                    print("Switched to product details")
+                    time.sleep(2)
+                    self.simulate_user_behavior()
+            except:
+                pass
+            
+            # Click reviews tab
+            try:
+                review_tab = self.page.query_selector('a:has-text("累计评价"), a:has-text("评价"), li:has-text("评价")')
+                if review_tab:
+                    review_tab.click()
+                    print("Switched to reviews tab")
+                    time.sleep(2)
+            except:
+                pass
+            
+            # Load more reviews
+            self.scroll_to_load_reviews(max_review_pages)
+            
+            # Wait for all async requests to complete
+            self.page.wait_for_load_state('networkidle', timeout=10000)
+            
+            # Crawl completion statistics
+            end_time = time.time()
+            duration = end_time - start_time
+            
+            print(f"\n{'='*60}")
+            print(f"Crawl completed! Duration: {duration:.2f} seconds")
+            print(f"Total requests: {self.request_count}")
+            print(f"Successful requests: {self.success_count}")
+            print(f"Failed requests: {len(self.failed_requests)}")
+            print(f"Product info items: {len(self.product_dict)}")
+            print(f"Reviews count: {len(self.reviews_list)}")
+            print(f"{'='*60}\n")
+            
+        except Exception as e:
+            print(f"Crawl error: {e}")
+            import traceback
+            traceback.print_exc()
+    
+    def save_to_csv(self, product_file='product.csv', reviews_file='reviews.csv'):
+        """Save data to CSV files"""
+        try:
+            # Save product information
+            if self.product_dict:
+                # Flatten nested dictionary
+                flat_product = self.flatten_dict(self.product_dict)
+                df_product = pd.DataFrame([flat_product])
+                df_product.to_csv(product_file, index=False, encoding='utf-8-sig')
+                print(f"Product info saved to: {product_file}")
+            
+            # Save review information
+            if self.reviews_list:
+                df_reviews = pd.DataFrame(self.reviews_list)
+                df_reviews.to_csv(reviews_file, index=False, encoding='utf-8-sig')
+                print(f"Reviews saved to: {reviews_file}")
+                
+        except Exception as e:
+            print(f"Error saving CSV: {e}")
+    
+    def save_to_mongodb(self):
+        """Save data to MongoDB"""
+        if not self.save_to_db:
+            print("MongoDB storage not enabled")
+            return
+        
+        try:
+            # Save product information
+            if self.product_dict:
+                self.product_dict['_id'] = self.product_dict.get('product_id')
+                self.product_dict['crawl_time'] = datetime.now()
+                self.products_collection.replace_one(
+                    {'_id': self.product_dict['_id']},
+                    self.product_dict,
+                    upsert=True
+                )
+                print(f"Product info saved to MongoDB")
+            
+            # Save review information
+            if self.reviews_list:
+                for review in self.reviews_list:
+                    review['product_id'] = self.product_dict.get('product_id')
+                    review['crawl_time'] = datetime.now()
+                
+                self.reviews_collection.insert_many(self.reviews_list)
+                print(f"{len(self.reviews_list)} reviews saved to MongoDB")
+                
+        except Exception as e:
+            print(f"Error saving to MongoDB: {e}")
+    
+    def save_to_json(self, filename='taobao_data.json'):
+        """Save data to JSON file"""
+        result = {
+            'crawl_time': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+            'statistics': {
+                'total_requests': self.request_count,
+                'success_requests': self.success_count,
+                'failed_requests': len(self.failed_requests),
+                'total_reviews': len(self.reviews_list)
+            },
+            'product_info': self.product_dict,
+            'reviews': self.reviews_list,
+            'failed_requests': self.failed_requests
+        }
+        
+        with open(filename, 'w', encoding='utf-8') as f:
+            json.dump(result, f, ensure_ascii=False, indent=2, default=str)
+        
+        print(f"Complete data saved to: {filename}")
+    
+    def flatten_dict(self, d, parent_key='', sep='_'):
+        """Flatten nested dictionary"""
+        items = []
+        for k, v in d.items():
+            new_key = f"{parent_key}{sep}{k}" if parent_key else k
+            if isinstance(v, dict):
+                items.extend(self.flatten_dict(v, new_key, sep=sep).items())
+            elif isinstance(v, list):
+                items.append((new_key, str(v)))
+            else:
+                items.append((new_key, v))
+        return dict(items)
+    
+    
+    
+    def close(self):
+        """Close browser and database connections"""
+        if self.browser:
+            self.browser.close()
+        if self.playwright:
+            self.playwright.stop()
+        if self.save_to_db and hasattr(self, 'mongo_client'):
+            self.mongo_client.close()
+        print("Resources released")
