@@ -1,0 +1,1034 @@
+-------------------------- objective 1-3 -------------------------------------
+DEBUG = False
+
+import re, os, math, json
+import pandas as pd
+import numpy as np
+from collections import Counter
+
+#Data Preprocessing
+def preprocess_text(text):
+    if pd.isna(text) or text == '':
+        return ''
+    text = str(text)
+    text = re.sub(r'[^\u4e00-\u9fa5a-zA-Z0-9\s]', '', text)
+    text = re.sub(r'\s+', ' ', text).strip()
+    return text
+
+def valid_text(s, min_len=6):
+    """
+    review length must be > 5.
+    """
+    if not isinstance(s, str):
+        return False
+    s2 = re.sub(r'\s+', ' ', s).strip()
+    return len(s2) >= min_len
+
+class BeautyBrandAnalyzer:
+    def __init__(self, file_path):
+        self.file_path = file_path
+        self.brand_mapping = {
+            'SK-II': 'SK-II production reviews',
+            'LA MER': 'LaMer production reviews',
+            'Estee Lauder': 'Estee Lauder production reviews',
+            'Lancome': 'Lancôme production reviews',
+            "L'Oreal": "L'Oréal production reviews",
+            'The Ordinary': 'the ordinary production reviews',
+            'Nivea': 'Nivea production reviews',
+            'Perfect Diary': 'prefectdiary production reviews'
+        }
+
+        # Product price information
+        self.product_prices = {
+            'SK-II': 700,
+            'LA MER': 1110,
+            'Estee Lauder': 515,
+            'Lancome': 20,
+            "L'Oreal": 259,
+            'The Ordinary': 120,
+            'Nivea': 54,
+            'Perfect Diary': 59
+        }
+
+        self.brand_image_keywords = {
+            '实用功效': {
+                'primary': ['好用', '实用', '有效', '管用', '效果好'],
+                'secondary': ['见效', '明显', '改善', '提升', '改变', '起作用',
+                              '立竿见影', '速效', '持久', '耐用'],
+                'functional_specific': ['保湿', '滋润', '紧致', '提亮', '修护',
+                                        '淡化', '祛痘', '美白', '抗皱', '防晒']
+            },
+            '品质感知': {
+                'primary': ['不错', '很好', '挺好', '品质', '质量'],
+                'secondary': ['优质', '高品质', '上乘', '精良', '卓越', '出色',
+                              '一流', '顶级', '优秀', '杰出'],
+                'quality_indicators': ['做工', '工艺', '材质', '成分', '配方', '纯度']
+            },
+            '品牌声誉': {
+                'primary': ['非常好', '大品牌', '知名', '著名', '品牌'],
+                'secondary': ['权威', '专业', '经典', '传统', '历史', '口碑',
+                              '声誉', '信誉', '老字号', '国际品牌'],
+                'trust_indicators': ['正品', '官方', '授权', '认证', '保证', '可靠',
+                                     '信赖', '值得信赖', '放心', '安心']
+            },
+            '审美体验': {
+                'primary': ['包装', '精美', '漂亮', '美观', '好看'],
+                'secondary': ['外观', '颜值', '设计', '造型', '款式', '样式',
+                              '精致', '优雅', '时尚', '高档'],
+                'sensory': ['质地', '手感', '触感', '气味', '香味', '味道',
+                            '清香', '芬芳', '温和', '柔和']
+            },
+            '情感连接': {
+                'primary': ['喜欢', '满意', '心动', '惊喜', '开心'],
+                'secondary': ['愉悦', '舒适', '享受', '放松', '治愈', '温暖',
+                              '感动', '激动', '兴奋', '期待'],
+                'loyalty': ['回购', '无限回购', '持续回购', '再买', '继续买',
+                            '推荐', '安利', '种草', '爱用', '钟爱']
+            }
+        }
+
+        self.trust_keywords = {
+            'direct_trust': {
+                'primary': ['信任', '放心', '可靠', '信赖', '靠谱'],
+                'secondary': ['安心', '相信', '信得过', '踏实', '稳妥']
+            },
+            'repeat_purchase': {
+                'primary': ['回购', '再买', '继续买', '一直买'],
+                'secondary': ['无限回购', '持续回购', '重复购买', '多次购买', '常买']
+            },
+            'recommendation': {
+                'primary': ['推荐', '安利', '种草', '值得买'],
+                'secondary': ['建议', '介绍', '分享', '告诉朋友', '推给别人']
+            },
+            'quality_confidence': {
+                'primary': ['大品牌', '品牌', '正品', '值得'],
+                'secondary': ['品质', '质量', '保证', '官方', '授权']
+            },
+            'effect_confidence': {
+                'primary': ['有效', '管用', '见效', '效果好'],
+                'secondary': ['明显', '显著', '立竿见影', '确实有用', '真的好用']
+            }
+        }
+
+        self.value_keywords = {
+            'functional_value': {
+                'primary': ['有效', '管用', '好用', '实用', '效果好'],
+                'secondary': ['见效', '改善', '明显', '保湿', '滋润', '紧致',
+                              '提亮', '修护', '淡化']
+            },
+            'emotional_value': {
+                'primary': ['喜欢', '爱用', '心动', '惊喜', '满意'],
+                'secondary': ['开心', '愉悦', '舒适', '温和', '清爽', '享受']
+            },
+            'social_value': {
+                'primary': ['大品牌', '知名', '有面子', '高端', '奢华'],
+                'secondary': ['优雅', '精致', '品味', '档次', '身份']
+            },
+            'cognitive_value': {
+                'primary': ['划算', '值得', '性价比', '超值', '物美价廉'],
+                'secondary': ['便宜', '实惠', '合理', '物超所值', '经济']
+            }
+        }
+
+        self.price_fairness_keywords = {
+            'price_acceptance': {
+                'primary': ['可以接受', '能接受', '合理', '不贵', '值这个价'],
+                'secondary': ['价格合适', '价位合理', '能承受', '还行']
+            },
+            'price_sensitivity': {
+                'primary': ['贵', '太贵', '昂贵', '价格高', '不便宜'],
+                'secondary': ['有点贵', '偏贵', '略贵', '死贵', '超贵']
+            },
+            'value_for_money': {
+                'primary': ['性价比', '划算', '值得', '超值', '物美价廉'],
+                'secondary': ['物超所值', '合算', '实惠', '经济', '省钱']
+            },
+            'price_comparison': {
+                'primary': ['比其他', '相比', '对比', '同类产品', '市面上'],
+                'secondary': ['同价位', '这个价格', '同等价位', '类似产品']
+            }
+        }
+
+        # storages
+        self.shop_data = None
+        self.brand_analysis_results = {}
+        self.brand_trust_analysis = {}
+        self.brand_value_analysis = {}
+        self.brand_price_fairness_analysis = {}
+
+    # Awareness
+    def load_shop_data(self):
+        """Load and process shop data for brand awareness analysis"""
+        try:
+            self.shop_data = pd.read_excel(self.file_path, sheet_name='店铺数据')
+
+            def process_fan_number(fan_str):
+                if pd.isna(fan_str):
+                    return 0
+                if isinstance(fan_str, str) and '万' in fan_str:
+                    return float(fan_str.replace('万', '')) * 10000
+                try:
+                    return float(fan_str)
+                except:
+                    return 0.0
+
+            self.shop_data['fans_numeric'] = self.shop_data['粉丝数'].apply(process_fan_number)
+            self.shop_data['years_numeric'] = pd.to_numeric(self.shop_data.get('open years', 0), errors='coerce').fillna(0)
+
+            if DEBUG: print("Shop data loaded successfully")
+            return True
+        except Exception as e:
+            if DEBUG: print(f"Error loading shop data: {e}")
+            return False
+
+    def analyze_brand_awareness(self):
+        """Analyze brand awareness based on fan numbers, ratings, and other metrics"""
+        if self.shop_data is None:
+            if not self.load_shop_data():
+                return
+        if DEBUG: print("\nGOAL 1: Brand Awareness Descriptive Statistics")
+
+        luxury_brands = self.shop_data[self.shop_data['品牌类型'] == '奢侈品']
+        mass_brands   = self.shop_data[self.shop_data['品牌类型'] == '大众品牌']
+
+        if DEBUG:
+            print("\n【Luxury Brand Awareness Statistics】")
+            if not luxury_brands.empty:
+                print(f"Number of brands: {len(luxury_brands)}")
+                print(f"Average fan count: {luxury_brands['fans_numeric'].mean()/10000:.1f}万")
+                print(f"Fan count range: {luxury_brands['fans_numeric'].min()/10000:.1f}万 - {luxury_brands['fans_numeric'].max()/10000:.1f}万")
+                print(f"Average store rating: {luxury_brands['评分'].mean():.2f}")
+                print(f"Average operating years: {luxury_brands['years_numeric'].mean():.1f} years")
+
+            print("\n【Mass Brand Awareness Statistics】")
+            if not mass_brands.empty:
+                print(f"Number of brands: {len(mass_brands)}")
+                print(f"Average fan count: {mass_brands['fans_numeric'].mean()/10000:.1f}万")
+                print(f"Fan count range: {mass_brands['fans_numeric'].min()/10000:.1f}万 - {mass_brands['fans_numeric'].max()/10000:.1f}万")
+                print(f"Average store rating: {mass_brands['评分'].mean():.2f}")
+                mf = mass_brands[mass_brands['years_numeric'] > 0]
+                if not mf.empty:
+                    print(f"Average operating years: {mf['years_numeric'].mean():.1f} years")
+
+            print("\n【Brand Awareness Ranking (by fan count)】")
+            sorted_brands = self.shop_data.sort_values('fans_numeric', ascending=False)
+            for i, (_, brand) in enumerate(sorted_brands.iterrows(), 1):
+                print(f"{i}. {brand['店铺名']} ({brand['品牌类型']}) - {brand['fans_numeric']/10000:.1f}万 fans")
+
+    #Brand Image 
+    def count_dimension_keywords(self, text, keyword_dict):
+        # Count occurrences of keywords for a specific dimension in one review.
+        # Primary terms get double weight.
+
+        if not text or not isinstance(text, str):
+            return 0
+        total = 0
+        for kw in keyword_dict.get('primary', []):
+            total += text.count(kw) * 2
+        for kw in keyword_dict.get('secondary', []):
+            total += text.count(kw)
+        for cat in ['functional_specific', 'quality_indicators', 'trust_indicators', 'sensory', 'loyalty']:
+            for kw in keyword_dict.get(cat, []):
+                total += text.count(kw)
+        return total
+
+    def analyze_brand_image_dimensions(self, use_full_data=True):
+        """
+        Brand image dimensions using
+        """
+        # if DEBUG: print("=== GOAL 1: Brand Image Dimension Analysis (Explicit Keywords, 初评 only) ===")
+
+        for brand_name, sheet_name in self.brand_mapping.items():
+            if DEBUG: print(f"\n {brand_name} - Brand Image Analysis")
+            try:
+                review_data = pd.read_excel(self.file_path, sheet_name=sheet_name)
+                sample = review_data if use_full_data else review_data.head(50)
+
+                dimension_scores = {'实用功效': 0, '品质感知': 0, '品牌声誉': 0, '审美体验': 0, '情感连接': 0}
+                valid_reviews = 0
+
+                for _, row in sample.iterrows():
+                    txt = row.get('初评')
+                    if valid_text(txt, 6):
+                        valid_reviews += 1
+                        clean = preprocess_text(txt)
+                        for dim, kws in self.brand_image_keywords.items():
+                            dimension_scores[dim] += self.count_dimension_keywords(clean, kws)
+
+                self.brand_analysis_results[brand_name] = {
+                    'total_reviews': len(review_data),
+                    'valid_reviews': valid_reviews,
+                    'dimension_scores': dimension_scores,
+                    'normalized_scores': {k: (dimension_scores[k]/valid_reviews*100 if valid_reviews>0 else 0)
+                                          for k in dimension_scores}
+                }
+
+                if DEBUG:
+                    print(f"Valid reviews: {valid_reviews}")
+                    print("Brand Image Dimension Scores:")
+                    for d, s in dimension_scores.items():
+                        norm = (s/valid_reviews*100) if valid_reviews>0 else 0
+                        print(f"  {d}: {s} mentions ({norm:.2f} per 100 reviews)")
+
+            except Exception as e:
+                if DEBUG: print(f"Sheet not found: {sheet_name} or error: {e}")
+
+    #Personality
+    def extract_brand_personality_words(self, text):
+        """
+        personality extractor
+        """
+        if not text or not isinstance(text, str):
+            return []
+        keywords = []
+        quality_terms = ['大品牌', '品牌', '值得信赖', '值得', '可靠', '信赖', '经典', '传统', '专业', '权威', '正品']
+        effect_terms  = ['保湿', '滋润', '紧致', '提亮', '修护', '淡化', '改善', '有效', '明显', '神奇', '好用', '实用']
+        experience_terms = ['舒适', '温和', '清爽', '不刺激', '吸收', '质地', '包装', '精美', '漂亮', '高端', '奢华']
+        emotion_terms = ['喜欢', '满意', '推荐', '惊喜', '心动', '回购', '种草', '爱用', '无限回购']
+        value_terms   = ['划算', '性价比', '超值', '物美价廉', '便宜', '贵', '物超所值']
+
+        for term in quality_terms + effect_terms + experience_terms + emotion_terms + value_terms:
+            if term in text:
+                keywords.append(term)
+
+        general_terms = re.findall(r'很好|好用|不错|挺好|非常好|相当好|真好|太好', text)
+        keywords.extend(general_terms)
+        return keywords
+
+    def analyze_brand_personality(self, use_full_data=True):
+        """
+        High-frequency word analysi
+        """
+
+        for brand_name, sheet_name in self.brand_mapping.items():
+            # if DEBUG: print(f"\n{brand_name} - Brand Personality Analysis")
+            try:
+                review_data = pd.read_excel(self.file_path, sheet_name=sheet_name)
+                sample = review_data if use_full_data else review_data.head(50)
+
+                all_words = []
+                valid_reviews = 0
+                for _, row in sample.iterrows():
+                    txt = row.get('初评')
+                    if valid_text(txt, 6):
+                        valid_reviews += 1
+                        all_words.extend(self.extract_brand_personality_words(txt))
+
+                freq = Counter(all_words)
+                sorted_words = [(w, c) for w, c in freq.most_common() if c >= 5][:15]
+
+                if brand_name not in self.brand_analysis_results:
+                    self.brand_analysis_results[brand_name] = {}
+                self.brand_analysis_results[brand_name].update({
+                    'total_reviews': len(review_data),
+                    'valid_reviews': valid_reviews,
+                    'total_words': len(all_words),
+                    'top_words': sorted_words
+                })
+
+                if DEBUG:
+                    print(f"Valid reviews: {valid_reviews}")
+                    print(f"Total extracted words: {len(all_words)}")
+                    print("High-frequency personality words (≥5):")
+                    if sorted_words:
+                        for i, (w, c) in enumerate(sorted_words, 1):
+                            print(f"  {i}. {w} ({c})")
+                    else:
+                        print("  None")
+
+            except Exception as e:
+                if DEBUG: print(f"Sheet not found: {sheet_name} or error: {e}")
+
+    # Trust
+    def calculate_trust_metrics(self, review_data, brand_name):
+        """Consumer trust metrics using explicit keyword"""
+        trust = {
+            'direct_trust': 0,
+            'repeat_purchase': 0,
+            'recommendation': 0,
+            'quality_confidence': 0,
+            'effect_confidence': 0,
+            'total_reviews': 0
+        }
+        for _, row in review_data.iterrows():
+            txt = row.get('初评')
+            if isinstance(txt, str):
+                trust['total_reviews'] += 1
+                if valid_text(txt, 6):
+                    review = preprocess_text(txt)
+                    for dim, kws in self.trust_keywords.items():
+                        trust[dim] += self.count_dimension_keywords(review, kws)
+
+        total_mentions = sum(trust[k] for k in self.trust_keywords.keys())
+        trust['trust_index'] = (total_mentions / trust['total_reviews'] * 100) if trust['total_reviews'] > 0 else 0
+        return trust
+
+    def analyze_consumer_trust(self):
+        if DEBUG: print("\nGOAL 2: Consumer Trust Analysis")
+        for brand_name, sheet_name in self.brand_mapping.items():
+            if DEBUG: print(f"\n【{brand_name} Trust Analysis】")
+            try:
+                review_data = pd.read_excel(self.file_path, sheet_name=sheet_name)
+                self.brand_trust_analysis[brand_name] = self.calculate_trust_metrics(review_data, brand_name)
+                if DEBUG:
+                    m = self.brand_trust_analysis[brand_name]
+                    print(f"Total reviews: {m['total_reviews']}")
+                    print(f"Trust index: {m['trust_index']:.2f}%")
+            except Exception as e:
+                if DEBUG: print(f"Error analyzing {brand_name}: {e}")
+
+    def analyze_trust_brand_image_correlation(self):
+        if DEBUG: print("\n=== Brand Image vs Consumer Trust Correlation (初评 only) ===")
+        data = []
+        for b in self.brand_analysis_results.keys():
+            if b in self.brand_trust_analysis and 'dimension_scores' in self.brand_analysis_results[b]:
+                s = self.brand_analysis_results[b]['dimension_scores']
+                data.append({
+                    'brand': b,
+                    'trust_index': self.brand_trust_analysis[b]['trust_index'],
+                    'functionality': s['实用功效'],
+                    'quality_perception': s['品质感知'],
+                    'brand_reputation': s['品牌声誉'],
+                    'aesthetic_experience': s['审美体验'],
+                    'emotional_connection': s['情感连接']
+                })
+        if not data:
+            if DEBUG: print("No data available for correlation analysis")
+            return
+
+        df = pd.DataFrame(data)
+        dims = ['functionality', 'quality_perception', 'brand_reputation', 'aesthetic_experience', 'emotional_connection']
+        names = {
+            'functionality': 'Functional Effectiveness',
+            'quality_perception': 'Quality Perception',
+            'brand_reputation': 'Brand Reputation',
+            'aesthetic_experience': 'Aesthetic Experience',
+            'emotional_connection': 'Emotional Connection'
+        }
+        corrs = []
+        for dim in dims:
+            corrs.append({'dimension': names[dim], 'correlation': df['trust_index'].corr(df[dim])})
+        corrs.sort(key=lambda x: abs(x['correlation'] or 0), reverse=True)
+
+        if DEBUG:
+            print("Dimension Importance Ranking (by |r| with trust_index):")
+            for i, item in enumerate(corrs, 1):
+                r = item['correlation'] or 0
+                strength = 'Strong ★★★' if abs(r) >= 0.7 else 'Moderate ★★' if abs(r) >= 0.5 else 'Weak ★' if abs(r) >= 0.3 else 'Very Weak'
+                print(f"{i}. {item['dimension']}: r = {r:.3f} ({strength})")
+
+    # Value & Price Fairness
+    def analyze_perceived_value(self, review_data, brand_name):
+        """Perceived value via explicit keywords, 初评 only."""
+        v = {
+            'functional_value': 0,
+            'emotional_value': 0,
+            'social_value': 0,
+            'cognitive_value': 0,
+            'total_reviews': 0,
+            'valid_reviews': 0
+        }
+        for _, row in review_data.iterrows():
+            txt = row.get('初评')
+            if isinstance(txt, str):
+                v['total_reviews'] += 1
+                if valid_text(txt, 6):
+                    has_any = False
+                    review = preprocess_text(txt)
+                    for cat, kws in self.value_keywords.items():
+                        c = self.count_dimension_keywords(review, kws)
+                        if c > 0:
+                            v[cat] += c
+                            has_any = True
+                    if has_any:
+                        v['valid_reviews'] += 1
+
+        total_mentions = sum(v[k] for k in ['functional_value','emotional_value','social_value','cognitive_value'])
+        v['perceived_value_index'] = (total_mentions / v['total_reviews'] * 100) if v['total_reviews'] > 0 else 0
+        return v
+
+    def analyze_price_fairness(self, review_data, brand_name, price):
+        """Price fairness via explicit keywords"""
+        f = {
+            'price_acceptance': 0,
+            'price_sensitivity': 0,
+            'value_for_money': 0,
+            'price_comparison': 0,
+            'total_reviews': 0,
+            'price_mentions': 0
+        }
+        for _, row in review_data.iterrows():
+            txt = row.get('初评')
+            if isinstance(txt, str):
+                f['total_reviews'] += 1
+                if valid_text(txt, 6):
+                    has_price = False
+                    review = preprocess_text(txt)
+                    for cat, kws in self.price_fairness_keywords.items():
+                        c = self.count_dimension_keywords(review, kws)
+                        if c > 0:
+                            f[cat] += c
+                            has_price = True
+                    if has_price:
+                        f['price_mentions'] += 1
+
+        net_accept = f['price_acceptance'] + f['value_for_money'] - f['price_sensitivity']
+        f['price_fairness_index'] = (net_accept / f['price_mentions'] * 100) if f['price_mentions'] > 0 else 0
+        return f
+
+    def analyze_value_and_price_fairness(self):
+        if DEBUG: print("\nGOAL 3: Perceived Value & Price Fairness Analysis")
+        for brand_name, sheet_name in self.brand_mapping.items():
+            if DEBUG: print(f"\n【{brand_name} Perceived Value & Price Fairness】")
+            try:
+                rd = pd.read_excel(self.file_path, sheet_name=sheet_name)
+                self.brand_value_analysis[brand_name] = self.analyze_perceived_value(rd, brand_name)
+                price = self.product_prices.get(brand_name, np.nan)
+                self.brand_price_fairness_analysis[brand_name] = self.analyze_price_fairness(rd, brand_name, price)
+            except Exception as e:
+                if DEBUG: print(f"Error analyzing {brand_name}: {e}")
+
+    #Comparison
+    def compare_methodologies(self):
+        if not self.brand_analysis_results:
+            print("Please run analysis first")
+            return
+        print("\n METHODOLOGY COMPARISON")
+        print("Explicit Keyword Method vs Original High-frequency Word Method")
+        for b in self.brand_analysis_results:
+            print(f"\n{b}")
+            r = self.brand_analysis_results[b]
+            if 'top_words' in r:
+                tw = r['top_words'][:5]
+                print("Original method (top 5 words):", ', '.join([f"{w}({c})" for w, c in tw]) if tw else "N/A")
+            if 'dimension_scores' in r:
+                ds = r['dimension_scores']
+                print("Explicit keywords:", ', '.join([f"{dim}({score})" for dim, score in ds.items()]))
+
+    #  Runner
+    def run_complete_analysis(self, export_keywords=True):
+
+        if export_keywords:
+         
+            print("KEYWORD DEFINITIONS")
+            self.print_keyword_summary()
+            self.export_keyword_definitions()
+
+        self.load_shop_data()
+
+     
+        print("EXECUTING GOAL 1: BRAND IMAGE ANALYSIS")
+     
+        self.analyze_brand_awareness()
+        self.analyze_brand_image_dimensions(use_full_data=True)
+        self.analyze_brand_personality(use_full_data=True)
+
+ 
+        print("EXECUTING GOAL 2: CONSUMER TRUST ANALYSIS")
+     
+        self.analyze_consumer_trust()
+        self.analyze_trust_brand_image_correlation()
+
+      
+        print("EXECUTING GOAL 3: VALUE & PRICE FAIRNESS ANALYSIS")
+     
+        self.analyze_value_and_price_fairness()
+        self.analyze_price_value_relationship()
+
+  
+        print("ANALYSIS COMPLETE")
+        
+
+    def print_keyword_summary(self):
+        print("\nKEYWORD DEFINITIONS SUMMARY")
+        print("\nBRAND IMAGE DIMENSION KEYWORDS")
+        for dim, cats in self.brand_image_keywords.items():
+            print(f"\n{dim}:")
+            for cat, kws in cats.items():
+                print(f"  {cat}: {', '.join(kws[:5])}..." if len(kws) > 5 else f"  {cat}: {', '.join(kws)}")
+
+        print("\nTRUST DIMENSION KEYWORDS")
+        for dim, cats in self.trust_keywords.items():
+            print(f"\n{dim}:")
+            for cat, kws in cats.items():
+                print(f"  {cat}: {', '.join(kws)}")
+
+        print("\nVALUE PERCEPTION KEYWORDS")
+        for dim, cats in self.value_keywords.items():
+            print(f"\n{dim}:")
+            for cat, kws in cats.items():
+                print(f"  {cat}: {', '.join(kws[:5])}..." if len(kws) > 5 else f"  {cat}: {', '.join(kws)}")
+
+        print("\nPRICE FAIRNESS KEYWORDS")
+        for dim, cats in self.price_fairness_keywords.items():
+            print(f"\n{dim}:")
+            for cat, kws in cats.items():
+                print(f"  {cat}: {', '.join(kws)}")
+
+    def export_keyword_definitions(self, filename='keyword_definitions.json'):
+        all_keywords = {
+            'brand_image_keywords': self.brand_image_keywords,
+            'trust_keywords': self.trust_keywords,
+            'value_keywords': self.value_keywords,
+            'price_fairness_keywords': self.price_fairness_keywords
+        }
+        try:
+            with open(filename, 'w', encoding='utf-8') as f:
+                json.dump(all_keywords, f, ensure_ascii=False, indent=2)
+            print(f"Keyword definitions exported to {filename}")
+        except Exception as e:
+            print(f"Error exporting keywords: {e}")
+
+    def analyze_price_value_relationship(self):
+        """Analyze relationship between price and perceived value"""
+        if not self.brand_value_analysis or not self.brand_price_fairness_analysis:
+            if DEBUG: print("Please run value and price fairness analysis first")
+            return
+
+        data = []
+        for brand in self.brand_value_analysis.keys():
+            if brand in self.brand_price_fairness_analysis:
+                data.append({
+                    'brand': brand,
+                    'price': self.product_prices[brand],
+                    'perceived_value_index': self.brand_value_analysis[brand]['perceived_value_index'],
+                    'price_fairness_index': self.brand_price_fairness_analysis[brand]['price_fairness_index'],
+                    'functional_value': self.brand_value_analysis[brand]['functional_value'],
+                    'emotional_value': self.brand_value_analysis[brand]['emotional_value'],
+                    'social_value': self.brand_value_analysis[brand]['social_value'],
+                    'cognitive_value': self.brand_value_analysis[brand]['cognitive_value']
+                })
+        df = pd.DataFrame(data)
+        pv = df['price'].corr(df['perceived_value_index'])
+        pf = df['price'].corr(df['price_fairness_index'])
+        if DEBUG:
+            print(f"dataframe", df)
+            print(f"Price vs Perceived Value correlation: r = {pv:.3f}")
+            print(f"Price vs Price Fairness correlation: r = {pf:.3f}")
+
+        df['price_group'] = pd.cut(df['price'], bins=[0, 100, 500, float('inf')],
+                                   labels=['Low (≤100)', 'Medium (101-500)', 'High (>500)'])
+        if DEBUG:
+            print("\nPerceived Value Ranking")
+            for i, (_, row) in enumerate(df.sort_values('perceived_value_index', ascending=False).iterrows(), 1):
+                print(f"  {i}. {row['brand']}: {row['perceived_value_index']:.2f}% (¥{row['price']})")
+            print("\nPrice Fairness Ranking")
+            for i, (_, row) in enumerate(df.sort_values('price_fairness_index', ascending=False).iterrows(), 1):
+                print(f"  {i}. {row['brand']}: {row['price_fairness_index']:.2f}% (¥{row['price']})")
+
+# Main
+def main():
+    file_path = '副本美妆店铺数据.xlsx'  # update if needed
+    try:
+        analyzer = BeautyBrandAnalyzer(file_path)
+        global DEBUG
+        DEBUG = True  # keep traces of modifications for transparency
+        analyzer.run_complete_analysis(export_keywords=True)
+        analyzer.compare_methodologies()
+        # print("\nENHANCED BEAUTY BRAND ANALYSIS COMPLETED.")
+        return analyzer
+    except FileNotFoundError:
+        print(f"Error: File '{file_path}' not found. Please check the file path.")
+        return None
+    except Exception as e:
+        print(f"An error occurred during analysis: {e}")
+        return None
+
+if __name__ == "__main__":
+  
+    analyzer_instance = main()
+    if analyzer_instance:
+        print("\nAnalyzer instance created successfully.")
+        print("Check 'keyword_definitions.json' for complete keyword lists.")
+
+
+--------------------------------- objective 4 -------------------------------------------------------
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+import seaborn as sns
+from collections import defaultdict
+
+# Configure matplotlib for Chinese font support
+plt.rcParams['font.sans-serif'] = ['SimHei', 'Microsoft YaHei']
+plt.rcParams['axes.unicode_minus'] = False
+
+class TrustMechanismAnalyzer:
+    """Analyzer for comparing trust-building mechanisms between luxury and mass market brands"""
+    
+    def __init__(self):
+        """Initialize the Trust Mechanism Analyzer with data from previous analyses"""
+        
+        # Basic brand data with trust indices and pricing
+        self.brand_data = {
+            'SK-II': {'type': 'Luxury', 'trust_index': 40.00, 'price': 700},
+            'LA MER': {'type': 'Luxury', 'trust_index': 20.67, 'price': 1110},
+            'Estee Lauder': {'type': 'Luxury', 'trust_index': 43.00, 'price': 515},
+            'Lancome': {'type': 'Luxury', 'trust_index': 23.67, 'price': 20},
+            'L\'Oreal': {'type': 'Mass Market', 'trust_index': 67.33, 'price': 259},
+            'The Ordinary': {'type': 'Mass Market', 'trust_index': 19.33, 'price': 120},
+            'Nivea': {'type': 'Mass Market', 'trust_index': 25.00, 'price': 54},
+            'Perfect Diary': {'type': 'Mass Market', 'trust_index': 20.67, 'price': 59}
+        }
+        
+        # Brand image dimensions data from Goal 1 analysis
+        self.brand_image_data = {
+            'SK-II': {'functional_effectiveness': 73, 'quality_perception': 60, 'brand_reputation': 41, 'aesthetic_experience': 36, 'emotional_connection': 35},
+            'LA MER': {'functional_effectiveness': 46, 'quality_perception': 23, 'brand_reputation': 65, 'aesthetic_experience': 36, 'emotional_connection': 13},
+            'Estee Lauder': {'functional_effectiveness': 64, 'quality_perception': 47, 'brand_reputation': 29, 'aesthetic_experience': 56, 'emotional_connection': 34},
+            'Lancome': {'functional_effectiveness': 70, 'quality_perception': 32, 'brand_reputation': 45, 'aesthetic_experience': 0, 'emotional_connection': 10},
+            'L\'Oreal': {'functional_effectiveness': 118, 'quality_perception': 72, 'brand_reputation': 69, 'aesthetic_experience': 56, 'emotional_connection': 26},
+            'The Ordinary': {'functional_effectiveness': 28, 'quality_perception': 20, 'brand_reputation': 135, 'aesthetic_experience': 17, 'emotional_connection': 0},
+            'Nivea': {'functional_effectiveness': 95, 'quality_perception': 38, 'brand_reputation': 44, 'aesthetic_experience': 10, 'emotional_connection': 19},
+            'Perfect Diary': {'functional_effectiveness': 57, 'quality_perception': 34, 'brand_reputation': 47, 'aesthetic_experience': 0, 'emotional_connection': 69}
+        }
+        
+        # Trust components data from Goal 2 analysis
+        self.trust_components_data = {
+            'SK-II': {'direct_trust': 9, 'repeat_purchase': 31, 'recommendation': 12, 'quality_confidence': 50, 'effect_confidence': 18},
+            'LA MER': {'direct_trust': 5, 'repeat_purchase': 20, 'recommendation': 12, 'quality_confidence': 23, 'effect_confidence': 2},
+            'Estee Lauder': {'direct_trust': 10, 'repeat_purchase': 31, 'recommendation': 18, 'quality_confidence': 47, 'effect_confidence': 24},
+            'Lancome': {'direct_trust': 5, 'repeat_purchase': 17, 'recommendation': 11, 'quality_confidence': 29, 'effect_confidence': 11},
+            'L\'Oreal': {'direct_trust': 17, 'repeat_purchase': 57, 'recommendation': 30, 'quality_confidence': 61, 'effect_confidence': 37},
+            'The Ordinary': {'direct_trust': 3, 'repeat_purchase': 8, 'recommendation': 12, 'quality_confidence': 6, 'effect_confidence': 29},
+            'Nivea': {'direct_trust': 3, 'repeat_purchase': 29, 'recommendation': 16, 'quality_confidence': 17, 'effect_confidence': 10},
+            'Perfect Diary': {'direct_trust': 3, 'repeat_purchase': 38, 'recommendation': 11, 'quality_confidence': 5, 'effect_confidence': 5}
+        }
+        
+        # Brand categorization
+        self.luxury_brands = ['SK-II', 'LA MER', 'Estee Lauder', 'Lancome']
+        self.mass_brands = ['L\'Oreal', 'The Ordinary', 'Nivea', 'Perfect Diary']
+        
+        # Dimension name mappings
+        self.trust_dimension_names = {
+            'direct_trust': 'Direct Trust Expression',
+            'repeat_purchase': 'Repeat Purchase Intention',
+            'recommendation': 'Recommendation Behavior',
+            'quality_confidence': 'Quality Confidence',
+            'effect_confidence': 'Effect Confidence'
+        }
+        
+        self.image_dimension_names = {
+            'functional_effectiveness': 'Functional Effectiveness',
+            'quality_perception': 'Quality Perception',
+            'brand_reputation': 'Brand Reputation',
+            'aesthetic_experience': 'Aesthetic Experience',
+            'emotional_connection': 'Emotional Connection'
+        }
+    
+    def analyze_basic_comparison(self):
+        """Perform basic comparison between luxury and mass market brands"""
+        print("GOAL 4: TRUST MECHANISM DIFFERENCES ANALYSIS ")
+        print("\n4.1 Basic Comparison Analysis")
+        
+        # Calculate average trust indices
+        luxury_trust_scores = [self.brand_data[brand]['trust_index'] for brand in self.luxury_brands]
+        mass_trust_scores = [self.brand_data[brand]['trust_index'] for brand in self.mass_brands]
+        
+        luxury_avg_trust = np.mean(luxury_trust_scores)
+        mass_avg_trust = np.mean(mass_trust_scores)
+        
+        print("Trust Building Basic Metrics Comparison:")
+        print(f"Luxury brands average trust: {luxury_avg_trust:.2f}%")
+        print(f"Mass market brands average trust: {mass_avg_trust:.2f}%")
+        print(f"Difference: {(mass_avg_trust - luxury_avg_trust):+.2f}% (Mass market brands {'higher' if mass_avg_trust > luxury_avg_trust else 'lower'})")
+        
+        # Calculate average prices
+        luxury_prices = [self.brand_data[brand]['price'] for brand in self.luxury_brands]
+        mass_prices = [self.brand_data[brand]['price'] for brand in self.mass_brands]
+        
+        luxury_avg_price = np.mean(luxury_prices)
+        mass_avg_price = np.mean(mass_prices)
+        
+        print(f"\nPrice Level Comparison:")
+        print(f"Luxury brands average price: ¥{luxury_avg_price:.0f}")
+        print(f"Mass market brands average price: ¥{mass_avg_price:.0f}")
+        print(f"Price multiple difference: {(luxury_avg_price / mass_avg_price):.1f}x")
+        
+        return {
+            'luxury_avg_trust': luxury_avg_trust,
+            'mass_avg_trust': mass_avg_trust,
+            'luxury_avg_price': luxury_avg_price,
+            'mass_avg_price': mass_avg_price
+        }
+    
+    def analyze_trust_building_pathways(self):
+        """Analyze trust building pathway mechanisms"""
+        print("\n4.2 Trust Building Pathway Mechanism Analysis")
+        
+        trust_dimensions = ['direct_trust', 'repeat_purchase', 'recommendation', 'quality_confidence', 'effect_confidence']
+        
+        print("Trust Building Pathway Comparison Analysis:")
+        
+        pathway_analysis = {}
+        
+        for dimension in trust_dimensions:
+            luxury_values = [self.trust_components_data[brand][dimension] for brand in self.luxury_brands]
+            mass_values = [self.trust_components_data[brand][dimension] for brand in self.mass_brands]
+            
+            luxury_avg = np.mean(luxury_values)
+            mass_avg = np.mean(mass_values)
+            difference = mass_avg - luxury_avg
+            
+            pathway_analysis[dimension] = {
+                'luxury_avg': luxury_avg,
+                'mass_avg': mass_avg,
+                'difference': difference
+            }
+            
+            print(f"{self.trust_dimension_names[dimension]}:")
+            print(f"  Luxury brands: {luxury_avg:.1f} times")
+            print(f"  Mass market brands: {mass_avg:.1f} times")
+            advantage = "Mass market advantage" if difference > 0 else "Luxury brand advantage"
+            print(f"  Difference: {difference:+.1f} ({advantage})")
+        
+        return pathway_analysis
+    
+    def analyze_brand_image_differences(self):
+        """Analyze brand image dimension differences"""
+        print("\n4.3 Brand Image Dimension Difference Analysis")
+        
+        image_dimensions = ['functional_effectiveness', 'quality_perception', 'brand_reputation', 'aesthetic_experience', 'emotional_connection']
+        
+        print("Brand Image Dimension Performance Comparison:")
+        
+        image_analysis = {}
+        
+        for dimension in image_dimensions:
+            luxury_values = [self.brand_image_data[brand][dimension] for brand in self.luxury_brands]
+            mass_values = [self.brand_image_data[brand][dimension] for brand in self.mass_brands]
+            
+            luxury_avg = np.mean(luxury_values)
+            mass_avg = np.mean(mass_values)
+            difference = luxury_avg - mass_avg
+            
+            image_analysis[dimension] = {
+                'luxury_avg': luxury_avg,
+                'mass_avg': mass_avg,
+                'difference': difference
+            }
+            
+            significance = "Significant difference" if abs(difference) > 10 else "Minor difference"
+            
+            print(f"{self.image_dimension_names[dimension]}:")
+            print(f"  Luxury brands: {luxury_avg:.1f}")
+            print(f"  Mass market brands: {mass_avg:.1f}")
+            print(f"  Difference: {difference:+.1f} ({significance})")
+        
+        return image_analysis
+    
+    def analyze_trust_efficiency(self):
+        """Analyze trust building efficiency"""
+        print("\n【Trust Building Efficiency Comparison】")
+        print("Trust Building Efficiency per Brand (Trust Index / Price per 100 yuan):")
+        
+        efficiency_data = {}
+        
+        for brand in self.brand_data:
+            efficiency = (self.brand_data[brand]['trust_index'] / self.brand_data[brand]['price'] * 100)
+            efficiency_data[brand] = efficiency
+            brand_type = self.brand_data[brand]['type']
+            print(f"{brand} ({brand_type}): {efficiency:.2f}")
+        
+        # Calculate group averages
+        luxury_efficiencies = [efficiency_data[brand] for brand in self.luxury_brands]
+        mass_efficiencies = [efficiency_data[brand] for brand in self.mass_brands]
+        
+        luxury_avg_eff = np.mean(luxury_efficiencies)
+        mass_avg_eff = np.mean(mass_efficiencies)
+        
+        print(f"\nEfficiency Comparison Results:")
+        print(f"Luxury brands average efficiency: {luxury_avg_eff:.2f}")
+        print(f"Mass market brands average efficiency: {mass_avg_eff:.2f}")
+        print(f"Mass market efficiency advantage: {(mass_avg_eff / luxury_avg_eff):.1f}x")
+        
+        return efficiency_data
+    
+    
+    def analyze_success_vs_failure_cases(self):
+        """Analyze most successful vs least successful cases"""
+        print("\n【Success Model vs Failure Model Comparison】")
+        
+        # Sort brands by trust index
+        sorted_brands = sorted(self.brand_data.items(), key=lambda x: x[1]['trust_index'], reverse=True)
+        
+        top_brand = sorted_brands[0]
+        bottom_brand = sorted_brands[-1]
+        
+        print("Most Successful Case Analysis:")
+        print(f"{top_brand[0]}: {top_brand[1]['trust_index']}% trust index")
+        print("Success factors: Strong functional effectiveness (118) + Good quality perception (72) + High repeat purchase (57)")
+        
+        print(f"\nLeast Successful Case Analysis:")
+        print(f"{bottom_brand[0]}: {bottom_brand[1]['trust_index']}% trust index")
+        print("Failure reasons: Excessive brand packaging (135 reputation) + Insufficient actual value (28 functional effectiveness)")
+    
+        
+    
+    def create_comparison_visualization(self):
+        """Create visualization comparing trust mechanisms"""
+        try:
+            # Prepare data for visualization
+            brands = list(self.brand_data.keys())
+            trust_indices = [self.brand_data[brand]['trust_index'] for brand in brands]
+            brand_types = [self.brand_data[brand]['type'] for brand in brands]
+            prices = [self.brand_data[brand]['price'] for brand in brands]
+            
+            # Create subplot figure
+            fig, ((ax1, ax2), (ax3, ax4)) = plt.subplots(2, 2, figsize=(15, 12))
+            
+            # 1. Trust Index Comparison
+            colors = ['#FF6B6B' if bt == 'Luxury' else '#4ECDC4' for bt in brand_types]
+            bars1 = ax1.bar(brands, trust_indices, color=colors)
+            ax1.set_title('Trust Index Comparison by Brand', fontweight='bold')
+            ax1.set_ylabel('Trust Index (%)')
+            ax1.tick_params(axis='x', rotation=45)
+            
+            # Add value labels on bars
+            for bar, value in zip(bars1, trust_indices):
+                ax1.text(bar.get_x() + bar.get_width()/2, bar.get_height() + 0.5,
+                        f'{value:.1f}%', ha='center', va='bottom', fontweight='bold')
+            
+            # 2. Price vs Trust Scatter Plot
+            luxury_data = [(self.brand_data[b]['price'], self.brand_data[b]['trust_index']) 
+                          for b in self.luxury_brands]
+            mass_data = [(self.brand_data[b]['price'], self.brand_data[b]['trust_index']) 
+                        for b in self.mass_brands]
+            
+            luxury_prices, luxury_trusts = zip(*luxury_data)
+            mass_prices, mass_trusts = zip(*mass_data)
+            
+            ax2.scatter(luxury_prices, luxury_trusts, color='#FF6B6B', s=100, label='Luxury Brands', alpha=0.7)
+            ax2.scatter(mass_prices, mass_trusts, color='#4ECDC4', s=100, label='Mass Market Brands', alpha=0.7)
+            ax2.set_title('Price vs Trust Index Relationship', fontweight='bold')
+            ax2.set_xlabel('Price (¥)')
+            ax2.set_ylabel('Trust Index (%)')
+            ax2.legend()
+            ax2.grid(True, alpha=0.3)
+            
+            # 3. Trust Components Comparison
+            trust_dims = list(self.trust_dimension_names.keys())
+            luxury_trust_avgs = []
+            mass_trust_avgs = []
+            
+            for dim in trust_dims:
+                luxury_avg = np.mean([self.trust_components_data[brand][dim] for brand in self.luxury_brands])
+                mass_avg = np.mean([self.trust_components_data[brand][dim] for brand in self.mass_brands])
+                luxury_trust_avgs.append(luxury_avg)
+                mass_trust_avgs.append(mass_avg)
+            
+            x = np.arange(len(trust_dims))
+            width = 0.35
+            
+            bars2 = ax3.bar(x - width/2, luxury_trust_avgs, width, label='Luxury Brands', color='#FF6B6B', alpha=0.7)
+            bars3 = ax3.bar(x + width/2, mass_trust_avgs, width, label='Mass Market Brands', color='#4ECDC4', alpha=0.7)
+            
+            ax3.set_title('Trust Components Comparison', fontweight='bold')
+            ax3.set_ylabel('Average Mentions')
+            ax3.set_xticks(x)
+            ax3.set_xticklabels([self.trust_dimension_names[dim].replace(' ', '\n') for dim in trust_dims], rotation=0)
+            ax3.legend()
+            
+            # 4. Brand Image Dimensions Radar Chart
+            image_dims = list(self.image_dimension_names.keys())
+            luxury_image_avgs = []
+            mass_image_avgs = []
+            
+            for dim in image_dims:
+                luxury_avg = np.mean([self.brand_image_data[brand][dim] for brand in self.luxury_brands])
+                mass_avg = np.mean([self.brand_image_data[brand][dim] for brand in self.mass_brands])
+                luxury_image_avgs.append(luxury_avg)
+                mass_image_avgs.append(mass_avg)
+            
+            x = np.arange(len(image_dims))
+            ax4.plot(x, luxury_image_avgs, 'o-', color='#FF6B6B', linewidth=2, markersize=8, label='Luxury Brands')
+            ax4.plot(x, mass_image_avgs, 's-', color='#4ECDC4', linewidth=2, markersize=8, label='Mass Market Brands')
+            ax4.set_title('Brand Image Dimensions Comparison', fontweight='bold')
+            ax4.set_ylabel('Average Score')
+            ax4.set_xticks(x)
+            ax4.set_xticklabels([self.image_dimension_names[dim].replace(' ', '\n') for dim in image_dims], rotation=0)
+            ax4.legend()
+            ax4.grid(True, alpha=0.3)
+            
+            plt.tight_layout()
+            plt.show()
+            
+        except Exception as e:
+            print(f"Visualization creation failed: {e}")
+            print("Please ensure matplotlib and seaborn are installed: pip install matplotlib seaborn")
+    
+    def generate_comprehensive_report(self):
+        """Generate comprehensive trust mechanism analysis report"""
+        print("\n" + "="*80)
+        print("COMPREHENSIVE TRUST MECHANISM ANALYSIS REPORT")
+        print("="*80)
+        
+        # Execute all analyses
+        basic_comparison = self.analyze_basic_comparison()
+        pathway_analysis = self.analyze_trust_building_pathways()
+        image_analysis = self.analyze_brand_image_differences()
+        efficiency_data = self.analyze_trust_efficiency()
+        
+        # self.analyze_core_mechanism_differences()
+        self.analyze_success_vs_failure_cases()
+        self.analyze_digital_environment_evolution()
+
+        
+        return {
+            'basic_comparison': basic_comparison,
+            'pathway_analysis': pathway_analysis,
+            'image_analysis': image_analysis,
+            'efficiency_data': efficiency_data
+        }
+    
+    def export_analysis_results(self, filename='trust_mechanism_analysis.xlsx'):
+        """Export analysis results to Excel file"""
+        try:
+            with pd.ExcelWriter(filename, engine='openpyxl') as writer:
+                
+                # Basic brand data
+                brand_df = pd.DataFrame.from_dict(self.brand_data, orient='index')
+                brand_df.reset_index(inplace=True)
+                brand_df.rename(columns={'index': 'Brand'}, inplace=True)
+                brand_df.to_excel(writer, sheet_name='Brand_Data', index=False)
+                
+                # Trust components
+                trust_df = pd.DataFrame.from_dict(self.trust_components_data, orient='index')
+                trust_df.reset_index(inplace=True)
+                trust_df.rename(columns={'index': 'Brand'}, inplace=True)
+                trust_df.to_excel(writer, sheet_name='Trust_Components', index=False)
+                
+                # Brand image data
+                image_df = pd.DataFrame.from_dict(self.brand_image_data, orient='index')
+                image_df.reset_index(inplace=True)
+                image_df.rename(columns={'index': 'Brand'}, inplace=True)
+                image_df.to_excel(writer, sheet_name='Brand_Image', index=False)
+                
+                print(f"Analysis results exported to {filename}")
+                
+        except Exception as e:
+            print(f"Export failed: {e}")
+
+
+def main():
+    """Main function to execute Goal 4 analysis"""
+    print("Trust Mechanism Comparative Analysis - Goal 4")
+    
+    # Initialize analyzer
+    analyzer = TrustMechanismAnalyzer()
+    
+    # Run comprehensive analysis
+    # results = analyzer.generate_comprehensive_report()
+    
+    
+    # Export results
+    print("\nExporting analysis results...")
+    analyzer.export_analysis_results()
+    
+    print("GOAL 4 ANALYSIS COMPLETED SUCCESSFULLY!")
+    return analyzer, results
+
+
+# Execute if run directly
+if __name__ == "__main__":
+    analyzer, results = main()
